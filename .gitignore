@@ -1,0 +1,9 @@
+build
+*.o
+*.d
+data
+bin
+test
+.venv
+.vscode
+*.txt
