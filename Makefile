@@ -35,14 +35,18 @@ LDLIBS    := $(MATIO_LIB) $(MATIO_LDLIBS) -lcudart
 # ---- Sources ----
 C_SRCS    := $(SRCDIR)/graph.c \
              $(SRCDIR)/opt_parser.c \
+			 $(SRCDIR)/cc_cuda.c \
              $(SRCDIR)/results_writer.c
 
 CU_SRCS   := $(SRCDIR)/cc_cuda_thread_per_vertex.cu \
 			 $(SRCDIR)/cc_cuda_thread_per_vertex_frontier.cu \
+			 $(SRCDIR)/cc_cuda_thread_per_vertex_afforest.cu \
 			 $(SRCDIR)/cc_cuda_warp_per_vertex.cu \
 			 $(SRCDIR)/cc_cuda_warp_per_vertex_frontier.cu \
+			 $(SRCDIR)/cc_cuda_warp_per_vertex_afforest.cu \
 			 $(SRCDIR)/cc_cuda_block_per_vertex.cu \
 			 $(SRCDIR)/cc_cuda_block_per_vertex_frontier.cu \
+			 $(SRCDIR)/cc_cuda_block_per_vertex_afforest.cu \
              $(SRCDIR)/cc_cuda_test.cu
 
 C_OBJS    := $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(C_SRCS))

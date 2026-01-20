@@ -39,6 +39,7 @@ static void print_usage(const char *prog)
             "Usage: %s [OPTIONS] <matrix-file-path>\n\n"
             "Options:\n"
             "  -b, --block-sizes SPEC  CUDA block sizes to sweep (default 256; comma/range syntax)\n"
+            "  -m, --method METHOD     CUDA CC method to use (default THREAD_PER_VERTEX)\n"
             "  -d, --device ID         CUDA device id (default 0)\n"
             "  -r, --runs N            Number of runs to average (default 1)\n"
             "  -o, --output DIR        Output directory (default 'results')\n"
@@ -89,6 +90,7 @@ int main(int argc, char **argv)
     int save_labels = 0;
     int verbose = 0;
     int device_id = 0;
+    CudaCCMethod method = CUDA_CC_METHOD_THREAD_PER_VERTEX;
 
     const struct option long_opts[] = {
         {"block-sizes", required_argument, NULL, 'b'},
@@ -98,11 +100,12 @@ int main(int argc, char **argv)
         {"save-labels", no_argument, NULL, 's'},
         {"verbose", no_argument, NULL, 'v'},
         {"help", no_argument, NULL, 'h'},
+        {"method", required_argument, NULL, 'm'},
         {NULL, 0, NULL, 0}
     };
 
     int opt, opt_index = 0;
-    while ((opt = getopt_long(argc, argv, "b:d:r:o:svh", long_opts, &opt_index)) != -1)
+    while ((opt = getopt_long(argc, argv, "b:d:r:o:svhm:", long_opts, &opt_index)) != -1)
     {
         switch (opt)
         {
@@ -153,6 +156,14 @@ int main(int argc, char **argv)
         case 'h':
             print_usage(argv[0]);
             return EXIT_SUCCESS;
+        case 'm':
+            if (optarg != NULL && atoi(optarg) >= 0 && atoi(optarg) <= CUDA_CC_METHOD_BLOCK_AFOREST)
+            {
+                method = (CudaCCMethod)atoi(optarg);
+                break;
+            }
+            fprintf(stderr, "Invalid method: %s\n", optarg);
+            // cast integer to enum
         default:
             print_usage(argv[0]);
             return EXIT_FAILURE;
@@ -252,16 +263,6 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    double *run_times = (double *)malloc((size_t)runs * sizeof(double));
-    if (!run_times)
-    {
-        fprintf(stderr, "Memory allocation failed\n");
-        free(labels);
-        free_csr(&G);
-        opt_int_list_free(&block_sizes);
-        return EXIT_FAILURE;
-    }
-
     printf("Sweeping %zu block size option%s (%d run%s each).\n",
            block_sizes.size,
            block_sizes.size == 1 ? "" : "s",
@@ -281,8 +282,8 @@ int main(int argc, char **argv)
         opt_cc.verbose = verbose;
 
         double total_time = 0.0;
+        double total_kernel_time = 0.0;
         uint32_t last_iters = 0;
-        double last_kernel_sec = 0.0;
 
         for (int run = 0; run < runs; run++)
         {
@@ -291,11 +292,10 @@ int main(int argc, char **argv)
             uint32_t iters = 0;
             double kernel_sec = 0.0;
 
-            int rc = compute_connected_components_cuda_block_frontier_async(&G, labels, &opt_cc, &iters, &kernel_sec);
+            int rc = compute_connected_components_cuda(&G, labels, &opt_cc, &iters, &kernel_sec, method);
             if (rc != 0)
             {
                 fprintf(stderr, "CUDA CC failed (rc=%d) on run %d.\n", rc, run + 1);
-                free(run_times);
                 free(labels);
                 free_csr(&G);
                 opt_int_list_free(&block_sizes);
@@ -304,24 +304,25 @@ int main(int argc, char **argv)
 
             double elapsed = now_seconds() - start;
             total_time += elapsed;
-            run_times[run] = elapsed;
+            total_kernel_time += kernel_sec;
 
             last_iters = iters;
-            last_kernel_sec = kernel_sec;
 
             printf("  Run %d: total %.6f s (kernel %.6f s), iters=%" PRIu32 "\n",
                    run + 1, elapsed, kernel_sec, iters);
         }
 
-        double average = total_time / runs;
-        printf("Average for block size %d: total %.6f s (last kernel %.6f s), iters=%" PRIu32 "\n",
-               bs, average, last_kernel_sec, last_iters);
+        double average_total = total_time / runs;
+        double average_kernel = total_kernel_time / runs;
+        printf("Average for block size %d: total %.6f s, kernel %.6f s, iters=%" PRIu32 "\n",
+               bs, average_total, average_kernel, last_iters);
 
         if (results_path_ready)
         {
             char column_name[64];
-            snprintf(column_name, sizeof(column_name), "bs=%d", bs);
-            results_writer_status csv_status = append_times_column(results_path, column_name, run_times, (size_t)runs);
+            snprintf(column_name, sizeof(column_name), "bs=%d kernel_avg | method=%d", bs, method);
+            double column_value = average_kernel;
+            results_writer_status csv_status = append_times_column(results_path, column_name, &column_value, 1);
             if (csv_status != RESULTS_WRITER_OK)
                 fprintf(stderr, "Warning: Failed to update %s (error %d)\n", results_path, (int)csv_status);
         }
@@ -336,7 +337,6 @@ int main(int argc, char **argv)
         if (!fout)
         {
             fprintf(stderr, "Failed to open output file %s.\n", labels_path);
-            free(run_times);
             free(labels);
             free_csr(&G);
             opt_int_list_free(&block_sizes);
@@ -357,7 +357,6 @@ int main(int argc, char **argv)
     if (results_path_ready)
         printf("Timing results written to %s\n", results_path);
 
-    free(run_times);
     free(labels);
     free_csr(&G);
     opt_int_list_free(&block_sizes);
